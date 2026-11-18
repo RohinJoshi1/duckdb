@@ -1049,34 +1049,25 @@ bool TopNWindowElimination::CanUseLateMaterialization(const LogicalWindow &windo
 				replaceable_bindings[right_binding] = left_binding;
 			}
 
-			auto left_column_bindings = join.children[0]->GetColumnBindings();
-			auto right_column_bindings = join.children[1]->GetColumnBindings();
-			auto lidxs = join.children[0]->GetTableIndex();
-			auto ridxs = join.children[1]->GetTableIndex();
-			if (lidxs.size() != 1 || ridxs.size() != 1) {
-				return false;
+			column_binding_set_t left_bindings;
+			column_binding_set_t right_bindings;
+			for (const auto &binding : join.children[0]->GetColumnBindings()) {
+				left_bindings.insert(binding);
 			}
-			auto left_idx = lidxs[0];
-			auto right_idx = ridxs[0];
+			for (const auto &binding : join.children[1]->GetColumnBindings()) {
+				right_bindings.insert(binding);
+			}
 
 			bool all_left_replaceable = true;
 			bool all_right_replaceable = true;
-			for (idx_t i = 0; i < projections.size(); i++) {
-				const auto &projection = projections[i];
-				if (projection.table_index != left_idx && projection.table_index != right_idx) {
+			for (const auto &projection : projections) {
+				const bool from_left = left_bindings.count(projection);
+				const bool from_right = right_bindings.count(projection);
+				if (from_left == from_right) {
 					return false;
 				}
-				if (projection.table_index == left_idx && projection.column_index >= left_column_bindings.size()) {
-					return false;
-				}
-				if (projection.table_index == right_idx && projection.column_index >= right_column_bindings.size()) {
-					return false;
-				}
-				auto &column_binding = projection.table_index == left_idx
-				                           ? left_column_bindings[projection.column_index]
-				                           : right_column_bindings[projection.column_index];
-				if (replaceable_bindings.find(column_binding) == replaceable_bindings.end()) {
-					if (column_binding.table_index == left_idx) {
+				if (replaceable_bindings.find(projection) == replaceable_bindings.end()) {
+					if (from_left) {
 						all_left_replaceable = false;
 					} else {
 						all_right_replaceable = false;
@@ -1089,33 +1080,14 @@ bool TopNWindowElimination::CanUseLateMaterialization(const LogicalWindow &windo
 				return false;
 			}
 
-			TableIndex replace_table_idx = all_right_replaceable ? right_idx : left_idx;
-			for (idx_t i = 0; i < projections.size(); i++) {
-				const auto projection_idx = projections[i];
-				if (projection_idx.table_index != left_idx && projection_idx.table_index != right_idx) {
-					return false;
-				}
-				if (projection_idx.table_index == left_idx &&
-				    projection_idx.column_index >= left_column_bindings.size()) {
-					return false;
-				}
-				if (projection_idx.table_index == right_idx &&
-				    projection_idx.column_index >= right_column_bindings.size()) {
-					return false;
-				}
-				auto &column_binding = projection_idx.table_index == left_idx
-				                           ? left_column_bindings[projection_idx.column_index]
-				                           : right_column_bindings[projection_idx.column_index];
-				if (column_binding.table_index == replace_table_idx) {
-					projections[i] = replaceable_bindings[column_binding];
+			const auto &dropped_bindings = all_right_replaceable ? right_bindings : left_bindings;
+			for (auto &projection : projections) {
+				if (dropped_bindings.count(projection)) {
+					projection = replaceable_bindings[projection];
 				}
 			}
 
-			if (all_right_replaceable) {
-				op = *op.get().children[0];
-			} else {
-				op = *op.get().children[1];
-			}
+			op = *op.get().children[all_right_replaceable ? 0 : 1];
 			break;
 		}
 		default: {

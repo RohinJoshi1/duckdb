@@ -373,3 +373,32 @@ SELECT id, p1, rowid FROM (SELECT id, p1, rowid, ROW_NUMBER() OVER (PARTITION BY
 
 statement ok
 SET disabled_optimizers = ''
+
+# Issue #28843: a window column from the joined side is not a column of the other table.
+# Late materialization must not rebuild it from the join key (k) of the surviving scan.
+
+statement ok
+CREATE TABLE a_join_win AS SELECT i AS k FROM range(4) t(i)
+
+statement ok
+CREATE TABLE b_join_win AS SELECT a_join_win.k, j AS x FROM a_join_win, range(3) t(j)
+
+query III
+SELECT b_join_win.k, b_join_win.x, w.n
+FROM b_join_win
+JOIN (SELECT k, row_number() OVER (ORDER BY k) AS n FROM a_join_win) w ON w.k = b_join_win.k
+QUALIFY row_number() OVER (PARTITION BY b_join_win.k ORDER BY b_join_win.x) = 1
+ORDER BY ALL
+----
+0	0	1
+1	0	2
+2	0	3
+3	0	4
+
+query II
+EXPLAIN SELECT b_join_win.k, b_join_win.x, w.n
+FROM b_join_win
+JOIN (SELECT k, row_number() OVER (ORDER BY k) AS n FROM a_join_win) w ON w.k = b_join_win.k
+QUALIFY row_number() OVER (PARTITION BY b_join_win.k ORDER BY b_join_win.x) = 1
+----
+logical_opt	<!REGEX>:.*COMPARISON_JOIN.*rowid = rowid.*
